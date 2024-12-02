@@ -4,7 +4,8 @@ import { mock } from './mock.js'
 import Router from '@koa/router'
 import bodyParser from 'koa-bodyparser'
 import { ObjectId } from 'mongodb'
-
+// /Users/wrr/Desktop/mongodb-macos-aarch64-8.0.3/bin
+// sudo  ./mongod --dbpath ./db
 const app = new Koa()
 const router = new Router()
 app.use(bodyParser())
