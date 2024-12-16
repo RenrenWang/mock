@@ -4,24 +4,35 @@ import { mock } from './mock.js'
 import Router from '@koa/router'
 import bodyParser from 'koa-bodyparser'
 import { ObjectId } from 'mongodb'
+import KoaBody from 'koa-body'
 // /Users/wrr/Desktop/mongodb-macos-aarch64-8.0.3/bin
 // sudo  ./mongod --dbpath ./db
 const app = new Koa()
 const router = new Router()
-app.use(bodyParser())
+// app.use(bodyParser({
+//   multipart: true
+// }))
+app.use(KoaBody({
+  multipart: true,
+  formidable: {
+    uploadDir: './temp', // 上传路径
+    keepExtensions: true, // 保留扩展名
+    maxFieldsSize: 2 * 1024 * 1024 // 2M
+  }
+}))
 
 app.use(db)
 app.use(mock)
 
 router.get('/api/mock/history', async ctx => {
-  const collection = await ctx.app.db('mock_interface_history')
+  const collection = await ctx.app.collection('mock_interface_history')
   const result = collection.find({})
   const list = await result.toArray()
   ctx.body = list
 })
 
 router.get('/api/mock', async (ctx, next) => {
-  const collection = await ctx.app.db('mock_interfaces')
+  const collection = await ctx.app.collection('mock_interfaces')
   const result = collection.find({})
   const list = await result.toArray()
   ctx.body = list
@@ -29,13 +40,13 @@ router.get('/api/mock', async (ctx, next) => {
 
 router.get('/api/mock/:id', async ctx => {
   const id = ctx.params.id
-  const collection = await ctx.app.db('mock_interfaces')
+  const collection = await ctx.app.collection('mock_interfaces')
   const result = collection.findOne({ _id: id })
   ctx.body = result
 })
 router.delete('/api/mock/:id', async ctx => {
   const id = ctx.params.id
-  const collection = await ctx.app.db('mock_interfaces')
+  const collection = await ctx.app.collection('mock_interfaces')
   const result = collection.deleteOne({ _id: id })
   ctx.body = result
 })
@@ -49,7 +60,8 @@ router.put('/api/mock', async ctx => {
     params,
     response,
     headers,
-    status
+    status,
+    delay
   } = ctx.request.body
 
   if (!id) {
@@ -61,7 +73,7 @@ router.put('/api/mock', async ctx => {
     return
   }
 
-  if (!url && !method && !description && !params && !response && !headers && !status) {
+  if (!url && !method && !description && !params && !response && !headers && !status && !delay) {
     ctx.body = {
       code: 1,
       success: false,
@@ -69,8 +81,8 @@ router.put('/api/mock', async ctx => {
     }
     return
   }
-  const updateId = new ObjectId(id)
-  const collection = await ctx.app.db('mock_interfaces');
+  const updateId = new ObjectId(String(id))
+  const collection = await ctx.app.collection('mock_interfaces');
   const resultOne = await collection.findOne({
     _id: updateId
   });
@@ -92,6 +104,7 @@ router.put('/api/mock', async ctx => {
     response: response || resultOne?.response,
     headers: headers || resultOne?.headers,
     status: status || resultOne?.status,
+    delay: delay || resultOne?.delay,
     updatedAt: new Date().getTime()
   }
 
@@ -102,7 +115,7 @@ router.put('/api/mock', async ctx => {
     }
   )
   if (result?.modifiedCount) {
-    const collectionHistory = await ctx.app.db('mock_interface_history');
+    const collectionHistory = await ctx.app.collection('mock_interface_history');
     await collectionHistory.insertOne({
       interface_id: id,
       timestamp: new Date().getTime(),
@@ -132,7 +145,8 @@ router.post('/api/mock', async ctx => {
     params,
     response,
     headers,
-    status
+    status,
+    delay
   } = ctx.request.body
 
   if (
@@ -152,7 +166,7 @@ router.post('/api/mock', async ctx => {
     return
   }
 
-  const collection = await ctx.app.db('mock_interfaces')
+  const collection = await ctx.app.collection('mock_interfaces')
   const findOneResult = await collection.findOne({
     url,
     method
@@ -175,6 +189,7 @@ router.post('/api/mock', async ctx => {
     headers,
     response,
     status,
+    delay,
     createdAt: new Date().getTime()
   })
 

@@ -41,17 +41,18 @@ async function getDatabaseInstance() {
   return databaseInstance;
 }
 
-// 函数：获取指定名称的集合
-async function getCollection(name) {
-  const db = await getDatabaseInstance();
-  if (!db) {
-    throw new Error("无法获取数据库实例，请检查数据库连接是否正常。");
-  }
-  return await db.collection(name);
-}
 
 // 中间件函数，将获取集合的方法挂载到ctx.app.db上
 export const db = async (ctx, next) => {
-  ctx.app.db = getCollection;
+  const db = await getDatabaseInstance()
+
+  if (!db) {
+    throw new Error("无法获取数据库实例，请检查数据库连接是否正常。");
+  }
+
+  ctx.app.db = db;
+  console.log("数据库连接成功，集合已准备就绪");
+  ctx.app.collection = (name) => db.collection(name);
+
   await next();
 };
