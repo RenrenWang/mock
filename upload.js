@@ -1,123 +1,173 @@
-import Koa from 'koa'
-import Router from '@koa/router'
-import { koaBody } from 'koa-body'
-import { MongoClient, GridFSBucket, ObjectId } from 'mongodb'
-import fs from 'fs'
-import path from 'path'
-import { getContentType } from './src/utils.js'
+import Koa from 'koa';
+import Router from '@koa/router';
+import { koaBody } from 'koa-body';
+import { MongoClient, GridFSBucket, ObjectId } from 'mongodb';
+import fs from 'fs';
+import path from 'path';
+import { getContentType } from './src/utils.js';
+import cors from '@koa/cors';
+import dotenv from 'dotenv';
+import helmet from 'koa-helmet';
+import sanitize from 'sanitize-filename';
+
+dotenv.config();
 
 const app = new Koa();
 const router = new Router();
 
-// MongoDB 连接配置
-const mongoURI = 'mongodb://localhost:27017';
-const dbName = 'fileDB';
+// MongoDB connection configuration
+const mongoURI = process.env.MONGO_URI || 'mongodb://localhost:27017';
+const dbName = process.env.DB_NAME || 'fileDB';
 let db, bucket;
 
-// 初始化 MongoDB 连接
+// CORS middleware
+app.use(cors({
+  origin: '*',
+  credentials: true,
+  allowMethods: ['GET', 'POST', 'OPTIONS'],
+  allowHeaders: ['Content-Type', 'Authorization', 'X-Token']
+}));
+
+app.use(async (ctx, next) => {
+  try {
+    await next();
+  } catch (err) {
+    ctx.status = err.status || 500;
+    ctx.body = { 
+      code: err.status || 500,
+      message: err.message,
+      stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
+    };
+    // 添加日志记录
+    console.error('[Error]:', err);
+  }
+});
+
+// 添加请求日志中间件
+app.use(async (ctx, next) => {
+  const start = Date.now();
+  await next();
+  const ms = Date.now() - start;
+  console.log(`${ctx.method} ${ctx.url} - ${ms}ms`);
+});
+
+// Security headers
+app.use(helmet());
+
+// Initialize MongoDB connection
 (async () => {
-  const client = new MongoClient(mongoURI);
-  await client.connect();
-  db = client.db(dbName);
-  bucket = new GridFSBucket(db, { bucketName: 'uploads' });
-  console.log('Connected to MongoDB');
+  try {
+    const client = new MongoClient(mongoURI, { useNewUrlParser: true, useUnifiedTopology: true });
+    await client.connect();
+    db = client.db(dbName);
+    bucket = new GridFSBucket(db, { bucketName: 'uploads' });
+    console.log('Connected to MongoDB');
+  } catch (error) {
+    console.error('Failed to connect to MongoDB', error);
+  }
 })();
 
-// 文件上传中间件
-app.use(
-  koaBody({
-    multipart: true,
-    formidable: {
-      uploadDir: path.join('./', '/temp'), // 临时存储目录
-      keepExtensions: true, // 保留扩展名
-    },
-  })
-);
-const sleep = (time) => {
-  return new Promise(resolve => setTimeout(resolve, 1000 * time));
-}
-// 上传文件并存储到 MongoDB
+// File upload middleware
+app.use(koaBody({
+  multipart: true,
+  formidable: {
+    uploadDir: path.join('./', '/temp'),
+    keepExtensions: true,
+    maxFileSize: 10 * 1024 * 1024, // 10 MB limit
+  },
+}));
+
+// Upload file and store in MongoDB
 router.post('/api/upload', async (ctx) => {
+  try {
+    const { file } = ctx.request.files;
+    const sanitizedFilename = sanitize(file.originalFilename || 'uploaded_file');
+    const readStream = fs.createReadStream(file.filepath);
 
-  const { file } = ctx.request.files;
-  const readStream = fs.createReadStream(file.filepath);
+    const uploadStream = bucket.openUploadStream(sanitizedFilename);
+    readStream.pipe(uploadStream);
 
-  // 将文件存储到 GridFS
-  const uploadStream = bucket.openUploadStream(file.originalFilename || 'uploaded_file');
-  readStream.pipe(uploadStream);
+    await new Promise((resolve, reject) => {
+      uploadStream.on('finish', resolve);
+      uploadStream.on('error', reject);
+    });
 
-  await new Promise((resolve, reject) => {
-    uploadStream.on('finish', resolve);
-    uploadStream.on('error', reject);
-  });
+    fs.unlinkSync(file.filepath);
 
-  // 删除临时文件
-  fs.unlinkSync(file.filepath);
-
-  ctx.body = { code: 0, message: 'File uploaded to MongoDB successfully!', data: uploadStream.id };
+    ctx.body = { code: 0, message: 'File uploaded to MongoDB successfully!', data: uploadStream.id };
+  } catch (error) {
+    ctx.status = 500;
+    ctx.body = { code: 1, message: 'File upload failed', error: error.message };
+  }
 });
 
-// 下载文件
+// Download file
 router.get('/api/download/:key', async (ctx) => {
-  const { key } = ctx.params;
-  const id = new ObjectId(String(key))
-
-  const file = await db.collection('uploads.files').findOne({ _id: id });
-
-  if (!file) {
-    ctx.throw(404, 'File not found');
-  }
-
   try {
+    const { key } = ctx.params;
 
+    if (!ObjectId.isValid(key)) {
+      ctx.throw(400, 'Invalid file ID');
+    }
+    
+    const id = ObjectId.createFromHexString(key);
 
-    const downloadStream = bucket.openDownloadStream(new ObjectId(String(key)));
-    const mimeType = file.contentType || 'application/octet-stream'; // 默认类型为二进制文件
-    ctx.set('Content-Type', mimeType);
-    // 修正 Content-Disposition，避免因特殊字符导致错误
-    const encodedFilename = encodeURIComponent(file?.filename);
-    ctx.set(
-      'Content-Disposition',
-      `attachment; filename="${encodedFilename}"; filename*=UTF-8''${encodedFilename}`
-    );
-    ctx.body = downloadStream;
-  } catch (err) {
-    console.error(err);
-    ctx.status = 404;
-    ctx.body = { message: 'File not found' };
-  }
-});
-// 图片预览接口
-router.get('/api/preview/:key', async (ctx) => {
-  const key = ctx.params.key;
-
-  try {
-    const file = await db.collection('uploads.files').findOne({ _id: new ObjectId(String(key)) });
+    const file = await db.collection('uploads.files').findOne({ _id: id });
 
     if (!file) {
       ctx.throw(404, 'File not found');
     }
 
-    const mimeType = getContentType(file?.filename);
+    const downloadStream = bucket.openDownloadStream(id);
+    const mimeType = file.contentType || 'application/octet-stream';
+    ctx.set('Content-Type', mimeType);
+    const encodedFilename = encodeURIComponent(file.filename);
+    ctx.set('Content-Disposition', `attachment; filename="${encodedFilename}"; filename*=UTF-8''${encodedFilename}`);
+    ctx.body = downloadStream;
+  } catch (error) {
+    ctx.status = 404;
+    ctx.body = { message: 'File not found', error: error.message };
+  }
+});
+
+// Preview image
+router.get('/api/preview/:key', async (ctx) => {
+  try {
+    const { key } = ctx.params;
+
+    if (!ObjectId.isValid(key)) {
+      ctx.throw(400, 'Invalid file ID');
+    }
+
+    const id = ObjectId.createFromHexString(key);
+
+    const file = await db.collection('uploads.files').findOne({ _id: id });
+
+    if (!file) {
+      ctx.throw(404, 'File not found');
+    }
+
+    const mimeType = getContentType(file.filename);
 
     if (!mimeType) {
       ctx.throw(400, 'File is not an image');
     }
 
     ctx.set('Content-Type', mimeType);
-
-    const downloadStream = bucket.openDownloadStreamByName(file?.filename);
+    const downloadStream = bucket.openDownloadStream(id);
     ctx.body = downloadStream;
-
-  } catch (err) {
-    ctx.status = err.status || 500;
-    ctx.body = { message: err.message || 'Internal Server Error' };
+  } catch (error) {
+    ctx.status = error.status || 500;
+    ctx.body = { message: error.message || 'Internal Server Error' };
   }
 });
-// 设置路由
+
+// Set routes
 app.use(router.routes()).use(router.allowedMethods());
 
-// 启动服务器
-app.listen(3000, () => {
+// Start server
+app.listen(9999, () => {
   console.log('Server running on http://localhost:3000');
 });
+
+

@@ -1,0 +1,17 @@
+{
+  "name": "oauth2-server",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js"
+  },
+  "dependencies": {
+    "@koa/router": "^12.0.1",
+    "@node-oauth/oauth2-server": "^4.3.1",
+    "koa": "^2.15.0",
+    "koa-bodyparser": "^4.4.1",
+    "mongodb": "^6.12.0",
+    "mongoose": "^8.1.0"
+  }
+}
